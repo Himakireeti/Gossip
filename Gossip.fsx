@@ -232,7 +232,7 @@ module tplgy=
                 Listener
                     |> spawn system "listener"
             
-            let rCount=int(round ((float numN)** 0.33))
+            let rCount=int(ceil ((float numN)** 0.33))
             let numNMod=rCount*rCount
             let numNM=int(numNMod)
 
@@ -242,7 +242,7 @@ module tplgy=
                 nodeArray.[i]<- Node listener (i+1)
                                     |> spawn system ("Node"+string(i))
 
-            let mutable cycle = (((numN |> float) ** 0.33) ** 2.0) |> ceil |> int
+            let mutable cycle = ((((numN |> float) ** 0.33) |> ceil) ** 2.0) |> int
             let mutable step = 0
 
             // printfn "%A" nodeArray
@@ -351,7 +351,7 @@ module tplgy=
                 Listener
                     |> spawn system "listener"
             
-            let rCount=int(round ((float numN)** 0.33))
+            let rCount=int(ceil ((float numN)** 0.33))
             let numNMod=rCount*rCount
             let numNM=int(numNMod)
 
@@ -361,8 +361,9 @@ module tplgy=
                 nodeArray.[i]<- Node listener (i+1)
                                     |> spawn system ("Node"+string(i))
 
-            let mutable cycle = (((numN |> float) ** 0.33) ** 2.0) |> ceil |> int
+            let mutable cycle = ((((numN |> float) ** 0.33) |> ceil) ** 2.0) |> int
             let mutable step = 0
+
 
             // printfn "%A" nodeArray
             printfn "%d %d %d" cycle rCount step
