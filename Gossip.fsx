@@ -1,382 +1,459 @@
+#time "on"
 #r "nuget: Akka.FSharp" 
 #r "nuget: Akka.TestKit" 
 
+
 open System
+open System.Diagnostics
 open Akka.Actor
 open Akka.Configuration
 open Akka.FSharp
-open System.Diagnostics
+open Akka.TestKit
 open System.Collections.Generic
-///////////////////////////Initialization////////////////////////////////////////
-type GossipMessageTypes =
-    | Initailize of IActorRef []
-    | InitializeVariables of int
-    | StartGossip of String
-    | ReportMsgRecvd of String
-    | StartPushSum of Double
-    | ComputePushSum of Double * Double * Double
-    | Result of Double * Double
-    | Time of int
-    | TotalNodes of int
-    | ActivateWorker 
-    | CallWorker
-    | AddNeighbors
 
-type Topology = 
-    | Gossip of String
-    | PushSum of String
+type Gossip =
+    |SetNbrs of IActorRef[] 
+    |BeginGossip of String
+    |ConvMsgGossip of String
+    |SetValues of int * IActorRef[] * int
+    |PushSum of float * float
+    |BeginPushSum of int
+    |ConvPushSum of float * float
+    |PrintNarray of int
 
-type Protocol = 
-    | Line of String
-    | Full of String
-    | TwoDimension of String
+let r  = System.Random()
 
-let mutable nodes =
-    int (string (fsi.CommandLineArgs.GetValue 1))
-let topology = string (fsi.CommandLineArgs.GetValue 2)
-let protocol = string (fsi.CommandLineArgs.GetValue 3)
-let timer = Diagnostics.Stopwatch()
+let timer = Stopwatch()
+
 let system = ActorSystem.Create("System")
-let mutable actualNumOfNodes = nodes |> float
-nodes <-
-    match topology with
-    | "3D" | "Imp3D" -> 
-        ((actualNumOfNodes ** 0.33)|>ceil ) ** 3.0 |> int
-    | _ -> nodes
 
-let mutable  nodeArray = [||]
-///////////////////////////Initialization////////////////////////////////////////
-///////////////////////////Supervisor Actor////////////////////////////////////////
-let Supervisor(mailbox: Actor<_>) =
-    
-    let mutable count = 0
-    let mutable start = 0
-    let mutable totalNodes = 0
-
-    let rec loop()= actor{
-        let! msg = mailbox.Receive();
-        match msg with 
-        | ReportMsgRecvd _ -> 
-            let ending = DateTime.Now.TimeOfDay.Milliseconds
-            count <- count + 1
-            if count = totalNodes then
-                timer.Stop()
-                printfn "Time for convergence: %f ms" timer.Elapsed.TotalMilliseconds
-                Environment.Exit(0)
-        | Result (sum, weight) ->
-            count <- count + 1
-            if count = totalNodes then
-                timer.Stop()
-                
-                printfn "Time for convergence: %f ms" timer.Elapsed.TotalMilliseconds
-                Environment.Exit(0)
-        | Time strtTime -> start <- strtTime
-        | TotalNodes n -> totalNodes <- n
-        | _ -> ()
-
-        return! loop()
-    }            
-    loop()
-///////////////////////////Supervisor Actor////////////////////////////////////////
-let supervisor = spawn system "Supervisor" Supervisor
-let dictionary = new Dictionary<IActorRef, bool>()
-
-///////////////////////////Worker Actor////////////////////////////////////////
-let Worker(mailbox: Actor<_>) =
-    let mutable rumourCount = 0
-    let mutable neighbours: IActorRef [] = [||]
-    let mutable sum = 0 |>double
-    let mutable weight = 1.0
-    let mutable termRound = 1
-    let mutable alreadyConverged = false
-    
-    
-    let rec loop()= actor{
-        let! message = mailbox.Receive();
-        
-        match message with 
-
-        | Initailize aref ->
-            neighbours <- aref
-
-        | ActivateWorker ->
-            if rumourCount < 11 then
-                let rnd = Random().Next(0, neighbours.Length)
-                if not dictionary.[neighbours.[rnd]] then
-                    neighbours.[rnd] <! CallWorker
-                mailbox.Self <! ActivateWorker
-
-        | CallWorker ->
-            
-            if rumourCount = 0 then 
-                mailbox.Self <! ActivateWorker
-            if (rumourCount = 10) then 
-                supervisor <! ReportMsgRecvd "Rumor"
-                dictionary.[mailbox.Self] <- true
-            rumourCount <- rumourCount + 1
-            
-        | InitializeVariables number ->
-            sum <- number |> double
-
-        | StartPushSum delta ->
-            let index = Random().Next(0, neighbours.Length)
-
-            sum <- sum / 2.0
-            weight <- weight / 2.0
-            neighbours.[index] <! ComputePushSum(sum, weight, delta)
-
-        | ComputePushSum (s: float, w, delta) ->
-            let newsum = sum + s
-            let newweight = weight + w
-
-            let cal = sum / weight - newsum / newweight |> abs
-
-            if alreadyConverged then
-
-                let index = Random().Next(0, neighbours.Length)
-                neighbours.[index] <! ComputePushSum(s, w, delta)
-            
-            else
-                if cal > delta then
-                    termRound <- 0
-                else 
-                    termRound <- termRound + 1
-
-                if  termRound = 3 then
-                    termRound <- 0
-                    alreadyConverged <- true
-                    supervisor <! Result(sum, weight)
-            
-                sum <- newsum / 2.0
-                weight <- newweight / 2.0
-                let index = Random().Next(0, neighbours.Length)
-                neighbours.[index] <! ComputePushSum(sum, weight, delta)
-        | _ -> ()
-        return! loop()
-    }            
-    loop()
+let mutable conTime=0
 
 
+let Listener (mailbox:Actor<_>) = 
 
-let ActorWorker (mailbox: Actor<_>) =
-    let neighbors = new List<IActorRef>()
+    let mutable noOfMsg = 0
+    let mutable noOfNde = 0
+    let mutable startTime = 0
+    let mutable totNodes =0
+    let mutable allNds:IActorRef[] = [||]
+
     let rec loop() = actor {
+
+            let! message = mailbox.Receive()
+            match message with 
+
+            | ConvMsgGossip message ->
+                let endTime = System.DateTime.Now.TimeOfDay.Milliseconds
+                noOfMsg <- noOfMsg + 1
+
+                if noOfMsg = totNodes then
+                    let rTime = timer.ElapsedMilliseconds
+                    printfn "Time for Convergence from timer: %A ms" rTime
+                    printfn "Time for Convergence from System Time: %A ms" (endTime-startTime)
+                    conTime <-endTime-startTime
+                    Environment.Exit 0
+
+                else
+                    let newStart= r.Next(0,allNds.Length)
+                    allNds.[newStart] <! BeginGossip("Hello")
+
+            | ConvPushSum (s,w) ->
+                let endTime = System.DateTime.Now.TimeOfDay.Milliseconds
+                noOfNde <- noOfNde + 1
+
+                if noOfNde = totNodes then
+                    let rTime = timer.ElapsedMilliseconds
+                    printfn "Time for Convergence from timer: %A ms" rTime
+                    printfn "Time for Convergence from System Time: %A ms" (endTime-startTime)
+                    conTime <-endTime-startTime
+                    Environment.Exit 0
+
+                else
+                    let newStart=r.Next(0,allNds.Length)
+                    allNds.[newStart] <! PushSum(s,w)
+          
+            | SetValues (strtTime,nodesRef,totNds) ->
+                startTime <-strtTime
+                allNds <- nodesRef
+                totNodes <-totNds
+                
+            | _->()
+
+            return! loop()
+        }
+    loop()
+
+    
+
+let Node listener nodeNum (mailbox:Actor<_>)  =
+
+    let mutable numMsgHeard = 0 
+    let mutable nbrs:IActorRef[]=[||]
+
+    let mutable sum1= nodeNum |> float
+    let mutable weight = 1.0
+    let mutable termRound = 1.0
+    let mutable flag = 0
+    let mutable counter = 1
+    let mutable ratio1 = 0.0
+    let mutable ratio2 = 0.0
+    let mutable ratio3 = 0.0
+    let mutable ratio4 = 0.0
+    let mutable convflag = 0
+    let ratiolimit = 10.0**(-10.0)
+    
+    let rec loop() = actor {
+
         let! message = mailbox.Receive()
         match message with 
-        | AddNeighbors _ ->
-            for i in [0..nodes-1] do
-                    neighbors.Add nodeArray.[i]
-            mailbox.Self <! ActivateWorker
-        | ActivateWorker ->
-            if neighbors.Count > 0 then
-                let randomNumber = Random().Next(neighbors.Count)
-                let randomActor = neighbors.[randomNumber]
-                
-                if (dictionary.[neighbors.[randomNumber]]) then  
-                    (neighbors.Remove randomActor) |>ignore
-                else 
-                    randomActor <! CallWorker
-                mailbox.Self <! ActivateWorker 
-        | _ -> ()
+
+        |BeginPushSum ind->
+            let index = r.Next(0,nbrs.Length)
+            let sn = index |> float
+            nbrs.[index] <! PushSum(sn,1.0)
+
+        |PushSum (s,w)->
+            if(convflag = 1) then
+                let index = r.Next(0,nbrs.Length)
+                nbrs.[index] <! PushSum(s,w)
+            
+            if(flag = 0) then
+                if(counter = 1) then
+                    ratio1<-sum1/weight
+                else if(counter = 2) then
+                    ratio2<-sum1/weight
+                else if(counter = 3) then
+                    ratio3<-sum1/weight
+                    flag<-1
+
+                counter<-counter+1
+
+            sum1<-sum1+s
+            sum1<-sum1/2.0
+            weight<-weight+w
+            weight<-weight/2.0
+            
+            ratio4<-sum1/weight
+           
+            if(flag=0) then
+                let index= r.Next(0,nbrs.Length)
+                nbrs.[index] <! PushSum(sum1,weight)                
+
+            
+            if(abs(ratio1-ratio4)<=ratiolimit && convflag=0) then 
+                      convflag<-1
+                      listener <! ConvPushSum(sum1,weight)
+
+            else
+                      ratio1<-ratio2
+                      ratio2<-ratio3
+                      ratio3<-ratio4
+                      let index= r.Next(0,nbrs.Length)
+                      nbrs.[index] <! PushSum(sum1,weight)
+
+        | SetNbrs nArray->
+                nbrs<-nArray
+        | PrintNarray num->
+                printfn "%A" nbrs
+
+
+        | BeginGossip msg ->
+
+                numMsgHeard<- numMsgHeard+1
+
+                if(numMsgHeard = 10) then
+                      listener <! ConvMsgGossip(msg)
+
+                else
+                      let index= r.Next(0,nbrs.Length)
+                      nbrs.[index] <! BeginGossip(msg)
+        | _-> ()
+
         return! loop()
     }
     loop()
 
+module prtcl=
 
-let GossipActor = spawn system "ActorWorker" ActorWorker
+        let callPrtcl algo numN nodeArr=
+            (nodeArr : _ array)|>ignore
 
-///////////////////////////Worker Actor////////////////////////////////////////
-///////////////////////////Program////////////////////////////////////////
-match topology with
-| "line" ->
-    nodeArray <- Array.zeroCreate (nodes + 1)
-    
-    for x in [0..nodes] do
-        let key: string = "demo" + string(x) 
-        let actorRef = spawn system (key) Worker
-        nodeArray.[x] <- actorRef 
-        dictionary.Add(nodeArray.[x], false)
-        nodeArray.[x] <! InitializeVariables x
+            if algo="gossip" then 
+                let starter= r.Next(0,numN-1)
+                nodeArr.[starter]<!BeginGossip("Hello")
 
-    for i in [ 0 .. nodes ] do
-        let mutable neighbourArray = [||]
-        if i = 0 then
-            neighbourArray <- (Array.append neighbourArray [|nodeArray.[i+1]|])
-        elif i = nodes then
-            neighbourArray <- (Array.append neighbourArray [|nodeArray.[i-1]|])
-        else 
-            neighbourArray <- (Array.append neighbourArray [| nodeArray.[(i - 1)] ; nodeArray.[(i + 1 ) ] |] ) 
+            elif algo="push-sum" then
+                let starter= r.Next(0,numN-1)
+                nodeArr.[starter]<!BeginPushSum(starter)
+
+            else
+                printfn"Wrong Argument!"
+
+            
+
+module tplgy=
+               
+        let buildFull numN algo=
+            let listener= 
+                Listener
+                    |> spawn system "listener"
+
+            let nodeArray = Array.zeroCreate(numN)
+
+            let mutable nbrArray:IActorRef[]=Array.empty
+            
+            for i in [0..numN-1] do
+                nodeArray.[i]<- Node listener (i+1)
+                                    |> spawn system ("Node"+string(i))
+            
+            for i in [0..numN-1] do
+                if i=0 then
+                    nbrArray<-nodeArray.[1..numN-1]
+                    nodeArray.[i]<!SetNbrs(nbrArray)
+
+                elif i=(numN-1) then 
+                    nbrArray<-nodeArray.[0..(numN-2)]
+                    nodeArray.[i]<!SetNbrs(nbrArray)
+
+                else
+                    nbrArray<-Array.append nodeArray.[0..i-1] nodeArray.[i+1..numN-1]
+                    nodeArray.[i]<!SetNbrs(nbrArray)
+           
+            timer.Start()
+                   
+            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numN)
+
+            prtcl.callPrtcl algo numN nodeArray
+
+
+        let build2D numN algo=
+            let listener= 
+                Listener
+                    |> spawn system "listener"
+            
+            let rCount=int(round ((float numN)** 0.33))
+            let numNMod=rCount*rCount
+            let numNM=int(numNMod)
+
+            let nodeArray = Array.zeroCreate(numNM*rCount)
+            
+            for i in [0..int(numNM*rCount)-1] do
+                nodeArray.[i]<- Node listener (i+1)
+                                    |> spawn system ("Node"+string(i))
+
+            let mutable cycle = (((numN |> float) ** 0.33) ** 2.0) |> ceil |> int
+            let mutable step = 0
+
+            // printfn "%A" nodeArray
+            printfn "%d %d %d" cycle rCount step
+
+            for layer in [1..rCount] do
+                for i in [0..numNM-1] do
+                    // printfn "%d %d" layer (step+i) 
+                    let mutable nbrArray:IActorRef[]=Array.empty
+                    if i=0 then
+                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i+rCount..step+i+rCount]
+
+                    elif i=rCount-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+rCount..step+i+rCount]
+                    
+                    elif i=numNM-rCount then 
+                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount]
+
+                    elif i=numNM-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount]
+
+                    elif i<rCount-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+
+                    elif i>numNM-rCount && i<numNM-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
+
+                    elif i%rCount = 0 then 
+                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+
+                    elif (i+1)%rCount = 0 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                   
+                    else
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+
+                    if layer =0 then
+                        nbrArray <- Array.append nbrArray nodeArray.[i+numNM..i+numNM]
+                    elif layer=cycle-1 then
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
+                    else
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i+numNM..step+i+numNM]
+
+                    nodeArray.[step+i]<!SetNbrs(nbrArray)
+
+                step <- step+cycle
+
+            timer.Start()
+
+            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numNM)
+
+            // // printfn "%A" nodeArray
+            // (nodeArray.[0] <! PrintNarray(1))
+            // (nodeArray.[1] <! PrintNarray(1))
+            // (nodeArray.[17] <! PrintNarray(1))
+
+            prtcl.callPrtcl algo numN nodeArray
+
+
+
+        let buildLine numN algo=
+
+            let listener= 
+                Listener
+                    |> spawn system "listener"
+
+            let nodeArray = Array.zeroCreate(numN)
+            
+            for i in [0..numN-1] do
+                nodeArray.[i]<- Node listener (i+1)
+                                    |> spawn system ("Node"+string(i))
+            
+            let mutable nbrArray:IActorRef[]=Array.empty
+
+
+            for i in [0..numN-1] do
+                if i=0 then
+                    nbrArray<-nodeArray.[1..1]    
+                    nodeArray.[i]<!SetNbrs(nbrArray)
+
+                elif i=(numN-1) then 
+                    nbrArray<-nodeArray.[(numN-2)..(numN-2)]                   
+                    nodeArray.[i]<!SetNbrs(nbrArray)
+
+                else
+                    nbrArray<-Array.append nodeArray.[i-1..i-1] nodeArray.[i+1..i+1]            
+                    nodeArray.[i]<!SetNbrs(nbrArray)
+            
+            timer.Start()
+
+            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numN)
+
+            prtcl.callPrtcl algo numN nodeArray
         
-        nodeArray.[i] <! Initailize(neighbourArray)
 
-    let leader = Random().Next(0, nodes)
+        let buildImp2D numN algo=
+
+            let listener= 
+                Listener
+                    |> spawn system "listener"
+            
+            let rCount=int(round ((float numN)** 0.33))
+            let numNMod=rCount*rCount
+            let numNM=int(numNMod)
+
+            let nodeArray = Array.zeroCreate(numNM*rCount)
+            
+            for i in [0..int(numNM*rCount)-1] do
+                nodeArray.[i]<- Node listener (i+1)
+                                    |> spawn system ("Node"+string(i))
+
+            let mutable cycle = (((numN |> float) ** 0.33) ** 2.0) |> ceil |> int
+            let mutable step = 0
+
+            // printfn "%A" nodeArray
+            printfn "%d %d %d" cycle rCount step
+
+            for layer in [1..rCount] do
+                for i in [0..numNM-1] do
+                    // printfn "%d %d" layer (step+i) 
+                    let mutable nbrArray:IActorRef[]=Array.empty
+                    if i=0 then
+                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i+rCount..step+i+rCount]
+
+                    elif i=rCount-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+rCount..step+i+rCount]
+
+                    elif i=numNM-rCount then 
+                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount]
+
+                    elif i=numNM-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount]
+
+                    elif i<rCount-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                        
+                   
+
+                    elif i>numNM-rCount && i<numNM-1 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
+
+                    elif i%rCount = 0 then 
+                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+
+                    elif (i+1)%rCount = 0 then 
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                   
+                    else
+                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
+                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+
+                    if layer =0 then
+                        nbrArray <- Array.append nbrArray nodeArray.[i+numNM..i+numNM]
+                        nbrArray <- Array.append nbrArray nodeArray.[i+numNM+1..i+numNM+1]
+
+                    elif layer=cycle-1 then
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM-1..step+i-numNM-1]
+
+                    else
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i+numNM..step+i+numNM]
+                        nbrArray <- Array.append nbrArray nodeArray.[step+i+numNM-1..step+i+numNM-1]
+
+
+                    
+                    nodeArray.[step+i]<!SetNbrs(nbrArray)
+
+                step <- step+cycle
+
+            timer.Start()
+
+            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numNM)
+
+            // // printfn "%A" nodeArray
+            // (nodeArray.[0] <! PrintNarray(1))
+            // (nodeArray.[1] <! PrintNarray(1))
+            (nodeArray.[1] <! PrintNarray(1))
+
+            prtcl.callPrtcl algo numN nodeArray
+
+
+
+        let createTopology top numN algo=
+           if top="full" then buildFull numN algo
+           elif top="2D" then build2D numN algo
+           elif top="line" then buildLine numN algo
+           elif top="imp2D" then buildImp2D numN algo
+           else printfn"Wrong Argument!"
+             
+module mainModule=
+
+        let args : string array = fsi.CommandLineArgs |> Array.tail
+        let mutable numNodes=args.[0] |> int
+        let topology=args.[1] |> string
+        let algo=args.[2] |>string
+        
+        printfn "%s %s" topology algo
+
+        tplgy.createTopology topology numNodes algo
    
-    timer.Start()
-    match protocol with
-    | "gossip" -> 
-        supervisor <! TotalNodes(nodes)
-        supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-        printfn "Starting Protocol Gossip"
-        nodeArray.[leader] <! ActivateWorker
-        GossipActor<! AddNeighbors
-        
-    | "push-sum" -> 
-        supervisor <! TotalNodes(nodes)
-        supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-        printfn "Starting Push Sum Protocol for Line"
-        nodeArray.[leader] <! StartPushSum(10.0 ** -10.0)     
-    | _ ->
-        printfn "Invlaid topology"   
-
-| "full" ->
-    nodeArray <- Array.zeroCreate (nodes + 1)
-    
-    for x in [0..nodes] do
-        let key: string = "demo" + string(x) 
-        let actorRef = spawn system (key) Worker
-        nodeArray.[x] <- actorRef 
-        nodeArray.[x] <! InitializeVariables x
-        dictionary.Add(nodeArray.[x], false)
-
-    //[0..nodes] |> List.iter (fun i -> nodeArray.[i] <! Initailize(nodeArray))
-    
-    for i in [ 0 .. nodes ] do
-        let mutable neighbourArray = [||]
-        for j in [0..nodes] do 
-            if i <> j then
-                neighbourArray <- (Array.append neighbourArray [|nodeArray.[j]|])
-        nodeArray.[i]<! Initailize(neighbourArray)
-              
-
-    timer.Start()
-    //Choose a random worker to start the gossip
-    let leader = Random().Next(0, nodes)
-
-    match protocol with
-    | "gossip" -> 
-        supervisor <! TotalNodes(nodes)
-        supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-        printfn "------------- Begin Gossip -------------"
-        nodeArray.[leader] <! CallWorker
-    | "push-sum" -> 
-        supervisor <! TotalNodes(nodes)
-        supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-        printfn "------------- Begin Push Sum -------------"
-        nodeArray.[leader] <! StartPushSum(10.0 ** -10.0) 
-    | _ ->
-        printfn "Invalid topology"
-
-| "3D" ->
-    let gridSize = nodes |> float |> sqrt |> ceil |> int 
-    printfn "%d" gridSize
-    nodeArray <- Array.zeroCreate (nodes+1)
-    
-    for x in [0..nodes] do
-        let key: string = "demo" + string(x) 
-        let actorRef = spawn system (key) Worker
-        
-        nodeArray.[x] <- actorRef 
-        nodeArray.[x] <! InitializeVariables x
-        dictionary.Add(nodeArray.[x], false)
-        
-    let mutable startcount = 0 |> int
-    let mutable endcount = gridSize - 1
-
-    printfn "%d" startcount
-    printfn "%d" endcount
-    let nodes = actualNumOfNodes |> int
-    for layer in [0..(nodes-1)] do   
-        for i in [ startcount .. endcount] do
-            for j in [ startcount .. endcount] do
-                let mutable neighbours: IActorRef [] = [||]
-                if j + 1 < gridSize then
-                    neighbours <- (Array.append neighbours [| nodeArray.[i * gridSize + j + 1] |])
-                if  j - 1 >= 0 then 
-                    neighbours <- (Array.append neighbours [| nodeArray.[i * gridSize + j - 1] |])
-                if i - 1 >= 0 then
-                    neighbours <- Array.append neighbours [| nodeArray.[(i - 1 ) * gridSize + j ] |]
-                if  i + 1 < gridSize then
-                    neighbours <- (Array.append neighbours [| nodeArray.[(i + 1) * gridSize + j] |])
-                let rnd = Random().Next(0, nodes-1)
-                neighbours <- (Array.append neighbours [|nodeArray.[rnd] |])
-                nodeArray.[i * gridSize + j] <! Initailize(neighbours)
-        
-        // print startcount
-        // print endcount
-        // startcount <- (startcount + ((actualNumOfNodes**2))) |> int
-        // endcount <- (endcount + ((actualNumOfNodes**2))) |> int
-    printfn "%A" nodeArray
-    
-    //Choose a random worker to start the gossip
-    let leader = Random().Next(0, nodes)
-    timer.Start()
-
-    match protocol with 
-    | "gossip" -> 
-        supervisor <! TotalNodes(nodes)
-        supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-        printfn "------------- Begin Gossip -------------"
-        nodeArray.[leader] <! ActivateWorker
-        GossipActor<! AddNeighbors
-    | "push-sum" -> 
-        supervisor <! TotalNodes(nodes)
-        supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-        printfn "------------- Begin Push Sum -------------"
-        nodeArray.[leader] <! StartPushSum(10.0 ** -10.0)
-    | _ -> 
-        printfn "Invalid topology"
-
-// | "Imp2D" ->
-//     let gridSize = nodes |> float |> sqrt |> ceil |> int 
-//     nodeArray <- Array.zeroCreate (nodes+1)
-    
-//     for x in [0..nodes] do
-//         let key: string = "demo" + string(x) 
-//         let actorRef = spawn system (key) Worker
-   
-//         nodeArray.[x] <- actorRef 
-//         nodeArray.[x] <! InitializeVariables x
-//         dictionary.Add(nodeArray.[x], false)
-        
-
-//     let mutable stratcount =0
-//     let mutable endcount = actualNumOfNodes**2
-//     for layer in [0..(actualNumOfNodes-1)] do        
-//         for i in [ startCount .. endCount] do
-//             for j in [ startCount .. endCount] do
-//                 let mutable neighbours: IActorRef [] = [||]
-//                 if j + 1 < gridSize then
-//                     neighbours <- (Array.append neighbours [| nodeArray.[i * gridSize + j + 1] |])
-//                 if  j - 1 >= 0 then 
-//                     neighbours <- (Array.append neighbours [| nodeArray.[i * gridSize + j - 1] |])
-//                 if i - 1 >= 0 then
-//                     neighbours <- Array.append neighbours [| nodeArray.[(i - 1 ) * gridSize + j ] |]
-//                 if  i + 1 < gridSize then
-//                     neighbours <- (Array.append neighbours [| nodeArray.[(i + 1) * gridSize + j] |])
-//                 let rnd = Random().Next(0, nodes-1)
-//                 neighbours <- (Array.append neighbours [|nodeArray.[rnd] |])
-//                 nodeArray.[i * gridSize + j] <! Initailize(neighbours)
-        
-//         stratcount <- stratcount + (actualNumOfNodes**2)
-//         endcount <- endcount + (actualNumOfNodes**2)
-    
-//     let leader = Random().Next(0, nodes)
-//     timer.Start()
-//     match protocol with 
-//     | "gossip" -> 
-//         supervisor <! TotalNodes(nodes)
-//         supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-//         printfn "------------- Begin Gossip -------------"
-//         nodeArray.[leader] <! ActivateWorker
-//         GossipActor<! AddNeighbors
-//     | "push-sum" -> 
-//         supervisor <! TotalNodes(nodes)
-//         supervisor <! Time(DateTime.Now.TimeOfDay.Milliseconds)
-//         printfn "------------- Begin Push Sum -------------"
-//         nodeArray.[leader] <! StartPushSum(10.0 ** -10.0)
-//     | _ -> 
-//         printfn "Invalid topology"
-// | _ -> ()
-
-Console.ReadLine() |> ignore
-///////////////////////////Program////////////////////////////////////////
+        System.Console.ReadLine() |> ignore
