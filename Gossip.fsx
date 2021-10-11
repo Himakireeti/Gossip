@@ -11,72 +11,72 @@ open Akka.FSharp
 open Akka.TestKit
 open System.Collections.Generic
 
-type Gossip =
-    |SetNbrs of IActorRef[] 
-    |BeginGossip of String
-    |ConvMsgGossip of String
+// message types
+type Message =
+    |Connect of IActorRef[] 
     |SetValues of int * IActorRef[] * int
+    |StartGossip of String
+    |EndGossip of String
     |PushSum of float * float
-    |BeginPushSum of int
-    |ConvPushSum of float * float
-    |PrintNarray of int
+    |StartPushSum of int
+    |EndPushSum of float * float
 
-let r  = System.Random()
-
+// helper globals
+let random  = System.Random()
 let timer = Stopwatch()
-
 let system = ActorSystem.Create("System")
+let mutable TimeToConverge=0
 
-let mutable conTime=0
 
+// helper actor to keep track of time and ending the program on convergence
+let Helper (mailbox:Actor<_>) = 
 
-let Listener (mailbox:Actor<_>) = 
-
-    let mutable noOfMsg = 0
-    let mutable noOfNde = 0
+    let mutable nodes:IActorRef[] = [||]
+    let mutable msgCount = 0
+    let mutable nodeCount = 0
     let mutable startTime = 0
-    let mutable totNodes =0
-    let mutable allNds:IActorRef[] = [||]
+    let mutable totalNodes =0
+    
 
     let rec loop() = actor {
 
             let! message = mailbox.Receive()
             match message with 
 
-            | ConvMsgGossip message ->
+            | EndGossip message ->
                 let endTime = System.DateTime.Now.TimeOfDay.Milliseconds
-                noOfMsg <- noOfMsg + 1
+                msgCount <- msgCount + 1
 
-                if noOfMsg = totNodes then
+                if msgCount = totalNodes then
                     let rTime = timer.ElapsedMilliseconds
-                    printfn "Time for Convergence from timer: %A ms" rTime
-                    printfn "Time for Convergence from System Time: %A ms" (endTime-startTime)
-                    conTime <-endTime-startTime
+                    printfn "Timer Convergence : %A ms" rTime
+                    printfn "System Time Convergence: %A ms" (endTime-startTime)
+                    TimeToConverge <-endTime-startTime
                     Environment.Exit 0
 
                 else
-                    let newStart= r.Next(0,allNds.Length)
-                    allNds.[newStart] <! BeginGossip("Hello")
+                    let newStart= random.Next(0,nodes.Length)
+                    nodes.[newStart] <! StartGossip("Hi")
 
-            | ConvPushSum (s,w) ->
+            | EndPushSum (s,w) ->
                 let endTime = System.DateTime.Now.TimeOfDay.Milliseconds
-                noOfNde <- noOfNde + 1
+                nodeCount <- nodeCount + 1
 
-                if noOfNde = totNodes then
+                if nodeCount = totalNodes then
                     let rTime = timer.ElapsedMilliseconds
-                    printfn "Time for Convergence from timer: %A ms" rTime
-                    printfn "Time for Convergence from System Time: %A ms" (endTime-startTime)
-                    conTime <-endTime-startTime
+                    printfn "Timer Convergence: %A ms" rTime
+                    printfn "System Time Convergence: %A ms" (endTime-startTime)
+                    TimeToConverge <-endTime-startTime
                     Environment.Exit 0
 
                 else
-                    let newStart=r.Next(0,allNds.Length)
-                    allNds.[newStart] <! PushSum(s,w)
+                    let newStart=random.Next(0,nodes.Length)
+                    nodes.[newStart] <! PushSum(s,w)
           
             | SetValues (strtTime,nodesRef,totNds) ->
                 startTime <-strtTime
-                allNds <- nodesRef
-                totNodes <-totNds
+                nodes <- nodesRef
+                totalNodes <-totNds
                 
             | _->()
 
@@ -86,375 +86,385 @@ let Listener (mailbox:Actor<_>) =
 
     
 
-let Node listener nodeNum (mailbox:Actor<_>)  =
+// actor node communicating in gossip or push-sum
+let Node helper nodeIndex (mailbox:Actor<_>)  =
 
-    let mutable numMsgHeard = 0 
-    let mutable nbrs:IActorRef[]=[||]
+    let mutable heardMessageCount = 0 
+    let mutable neighbors:IActorRef[]=[||]
 
-    let mutable sum1= nodeNum |> float
-    let mutable weight = 1.0
+    // push sum starter values
+    let mutable s = nodeIndex |> float
+    let mutable w = 1.0
+    let mutable r1 = 0.0
+    let mutable r2 = 0.0
+    let mutable r3 = 0.0
+    let mutable r4 = 0.0
+    let threshold = 10.0**(-10.0)
+    
     let mutable termRound = 1.0
     let mutable flag = 0
     let mutable counter = 1
-    let mutable ratio1 = 0.0
-    let mutable ratio2 = 0.0
-    let mutable ratio3 = 0.0
-    let mutable ratio4 = 0.0
-    let mutable convflag = 0
-    let ratiolimit = 10.0**(-10.0)
+    let mutable converged = 0
+    
     
     let rec loop() = actor {
 
         let! message = mailbox.Receive()
         match message with 
 
-        |BeginPushSum ind->
-            let index = r.Next(0,nbrs.Length)
-            let sn = index |> float
-            nbrs.[index] <! PushSum(sn,1.0)
+        // add neighbours to the node
+        | Connect nArray->
+                neighbors<-nArray
 
-        |PushSum (s,w)->
-            if(convflag = 1) then
-                let index = r.Next(0,nbrs.Length)
-                nbrs.[index] <! PushSum(s,w)
+        // push sum protocol messages
+        | StartPushSum ind->
+            let index = random.Next(0,neighbors.Length)
+            let sn = index |> float
+            neighbors.[index] <! PushSum(sn,1.0)
+
+        | PushSum (sum,weight)->
+            // do calculation until convergence
+            if(converged = 1) then
+                let index = random.Next(0,neighbors.Length)
+                neighbors.[index] <! PushSum(sum,weight)
             
             if(flag = 0) then
-                if(counter = 1) then
-                    ratio1<-sum1/weight
-                else if(counter = 2) then
-                    ratio2<-sum1/weight
-                else if(counter = 3) then
-                    ratio3<-sum1/weight
+                match counter with
+                | 1 ->
+                    r1<-s/w
+                | 2 ->
+                    r2<-s/w
+                | 3 ->
+                    r3<-s/w
                     flag<-1
+                | _ -> 
 
                 counter<-counter+1
 
-            sum1<-sum1+s
-            sum1<-sum1/2.0
-            weight<-weight+w
-            weight<-weight/2.0
+            s<-s+sum
+            s<-s/2.0
+            w<-w+weight
+            w<-w/2.0
             
-            ratio4<-sum1/weight
+            r4<-s/w
            
             if(flag=0) then
-                let index= r.Next(0,nbrs.Length)
-                nbrs.[index] <! PushSum(sum1,weight)                
+                let index= random.Next(0,neighbors.Length)
+                neighbors.[index] <! PushSum(s,w)                
 
             
-            if(abs(ratio1-ratio4)<=ratiolimit && convflag=0) then 
-                      convflag<-1
-                      listener <! ConvPushSum(sum1,weight)
+            if(abs(r1-r4)<=threshold && converged=0) then 
+                converged<-1
+                helper <! EndPushSum(s,w)
 
             else
-                      ratio1<-ratio2
-                      ratio2<-ratio3
-                      ratio3<-ratio4
-                      let index= r.Next(0,nbrs.Length)
-                      nbrs.[index] <! PushSum(sum1,weight)
+                r1<-r2
+                r2<-r3
+                r3<-r4
+                let index= random.Next(0,neighbors.Length)
+                neighbors.[index] <! PushSum(s,w)
 
-        | SetNbrs nArray->
-                nbrs<-nArray
-        | PrintNarray num->
-                printfn "%A" nbrs
+        
+        // gossip protocol messages
+        | StartGossip msg ->
 
+                heardMessageCount<- heardMessageCount+1
 
-        | BeginGossip msg ->
-
-                numMsgHeard<- numMsgHeard+1
-
-                if(numMsgHeard = 10) then
-                      listener <! ConvMsgGossip(msg)
+                if(heardMessageCount = 10) then
+                      helper <! EndGossip(msg)
 
                 else
-                      let index= r.Next(0,nbrs.Length)
-                      nbrs.[index] <! BeginGossip(msg)
+                      let index= random.Next(0,neighbors.Length)
+                      neighbors.[index] <! StartGossip(msg)
+
+
         | _-> ()
 
         return! loop()
     }
     loop()
 
-module prtcl=
 
-        let callPrtcl algo numN nodeArr=
-            (nodeArr : _ array)|>ignore
+// communicate in given protocol
+module protocol=
 
-            if algo="gossip" then 
-                let starter= r.Next(0,numN-1)
-                nodeArr.[starter]<!BeginGossip("Hello")
-
-            elif algo="push-sum" then
-                let starter= r.Next(0,numN-1)
-                nodeArr.[starter]<!BeginPushSum(starter)
-
-            else
-                printfn"Wrong Argument!"
+        // start given protocol
+        let call algorithm nodeCount nodes=
+            (nodes : _ array)|>ignore
+            match algorithm with
+            | "gossip" ->
+                let first= random.Next(0,nodeCount-1)
+                nodes.[first]<!StartGossip("Hi")
+            | "push-sum" ->
+                let first= random.Next(0,nodeCount-1)
+                nodes.[first]<!StartPushSum(first)
+            | _ ->
+                printfn "Invalid protocol - try gossip or push-sum"
+                Environment.Exit 0
 
             
+// communicate in given topology
+module topology=
+        
+        // communicate in full topology
+        let full nodeCount algorithm=
+            let helper= 
+                Helper
+                    |> spawn system "helper"
 
-module tplgy=
-               
-        let buildFull numN algo=
-            let listener= 
-                Listener
-                    |> spawn system "listener"
+            let nodes = Array.zeroCreate(nodeCount)
 
-            let nodeArray = Array.zeroCreate(numN)
-
-            let mutable nbrArray:IActorRef[]=Array.empty
+            let mutable neighbors:IActorRef[]=Array.empty
             
-            for i in [0..numN-1] do
-                nodeArray.[i]<- Node listener (i+1)
+            // create actor nodes
+            for i in [0..nodeCount-1] do
+                nodes.[i]<- Node helper (i+1)
                                     |> spawn system ("Node"+string(i))
             
-            for i in [0..numN-1] do
+            // connect neighbors in full topology
+            for i in [0..nodeCount-1] do
                 if i=0 then
-                    nbrArray<-nodeArray.[1..numN-1]
-                    nodeArray.[i]<!SetNbrs(nbrArray)
+                    neighbors<-nodes.[1..nodeCount-1]
+                    nodes.[i]<!Connect(neighbors)
 
-                elif i=(numN-1) then 
-                    nbrArray<-nodeArray.[0..(numN-2)]
-                    nodeArray.[i]<!SetNbrs(nbrArray)
+                elif i=(nodeCount-1) then 
+                    neighbors<-nodes.[0..(nodeCount-2)]
+                    nodes.[i]<!Connect(neighbors)
 
                 else
-                    nbrArray<-Array.append nodeArray.[0..i-1] nodeArray.[i+1..numN-1]
-                    nodeArray.[i]<!SetNbrs(nbrArray)
+                    neighbors<-Array.append nodes.[0..i-1] nodes.[i+1..nodeCount-1]
+                    nodes.[i]<!Connect(neighbors)
            
-            timer.Start()
-                   
-            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numN)
+            // start timer
+            timer.Start()       
+            helper<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodes,nodeCount)
 
-            prtcl.callPrtcl algo numN nodeArray
+            // start communicating
+            protocol.call algorithm nodeCount nodes
 
-
-        let build2D numN algo=
-            let listener= 
-                Listener
-                    |> spawn system "listener"
+        // communicate in perfect 3D topology
+        let p3D nodeCount algorithm=
+            let helper= 
+                Helper
+                    |> spawn system "helper"
             
-            let rCount=int(ceil ((float numN)** 0.33))
-            let numNMod=rCount*rCount
-            let numNM=int(numNMod)
+            let layers=int(ceil ((float nodeCount)** 0.33))
+            let layerNodeCount=int(layers*layers)
 
-            let nodeArray = Array.zeroCreate(numNM*rCount)
+            let nodes = Array.zeroCreate(layerNodeCount*layers)
             
-            for i in [0..int(numNM*rCount)-1] do
-                nodeArray.[i]<- Node listener (i+1)
+            // create actor nodes
+            for i in [0..int(layerNodeCount*layers)-1] do
+                nodes.[i]<- Node helper (i+1)
                                     |> spawn system ("Node"+string(i))
 
-            let mutable cycle = ((((numN |> float) ** 0.33) |> ceil) ** 2.0) |> int
+            let mutable cycle = ((((nodeCount |> float) ** 0.33) |> ceil) ** 2.0) |> int
             let mutable step = 0
 
-            // printfn "%A" nodeArray
-            printfn "%d %d %d" cycle rCount step
-
-            for layer in [1..rCount] do
-                for i in [0..numNM-1] do
+            // connect neighbors in perfect 3D topology
+            for layer in [1..layers] do
+                for i in [0..layerNodeCount-1] do
                     // printfn "%d %d" layer (step+i) 
-                    let mutable nbrArray:IActorRef[]=Array.empty
+                    let mutable neighbors:IActorRef[]=Array.empty
                     if i=0 then
-                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i+rCount..step+i+rCount]
+                        neighbors<-Array.append nodes.[step+i+1..step+i+1] nodes.[step+i+layers..step+i+layers]
 
-                    elif i=rCount-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+rCount..step+i+rCount]
+                    elif i=layers-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+layers..step+i+layers]
                     
-                    elif i=numNM-rCount then 
-                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount]
+                    elif i=layerNodeCount-layers then 
+                        neighbors<-Array.append nodes.[step+i+1..step+i+1] nodes.[step+i-layers..step+i-layers]
 
-                    elif i=numNM-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount]
+                    elif i=layerNodeCount-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i-layers..step+i-layers]
 
-                    elif i<rCount-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                    elif i<layers-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+1..step+i+1] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
 
-                    elif i>numNM-rCount && i<numNM-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
+                    elif i>layerNodeCount-layers && i<layerNodeCount-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+1..step+i+1] 
+                        neighbors<-Array.append neighbors nodes.[step+i-layers..step+i-layers] 
 
-                    elif i%rCount = 0 then 
-                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                    elif i%layers = 0 then 
+                        neighbors<-Array.append nodes.[step+i+1..step+i+1] nodes.[step+i-layers..step+i-layers] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
 
-                    elif (i+1)%rCount = 0 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                    elif (i+1)%layers = 0 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i-layers..step+i-layers] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
                    
                     else
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+1..step+i+1] 
+                        neighbors<-Array.append neighbors nodes.[step+i-layers..step+i-layers] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
 
                     if layer =0 then
-                        nbrArray <- Array.append nbrArray nodeArray.[i+numNM..i+numNM]
+                        neighbors <- Array.append neighbors nodes.[i+layerNodeCount..i+layerNodeCount]
                     elif layer=cycle-1 then
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
+                        neighbors <- Array.append neighbors nodes.[step+i-layerNodeCount..step+i-layerNodeCount]
                     else
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i+numNM..step+i+numNM]
+                        neighbors <- Array.append neighbors nodes.[step+i-layerNodeCount..step+i-layerNodeCount]
+                        neighbors <- Array.append neighbors nodes.[step+i+layerNodeCount..step+i+layerNodeCount]
 
-                    nodeArray.[step+i]<!SetNbrs(nbrArray)
+                    nodes.[step+i]<!Connect(neighbors)
 
                 step <- step+cycle
 
+            // start timer
             timer.Start()
+            helper<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodes,layerNodeCount)
 
-            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numNM)
-
-            // // printfn "%A" nodeArray
-            // (nodeArray.[0] <! PrintNarray(1))
-            // (nodeArray.[1] <! PrintNarray(1))
-            // (nodeArray.[17] <! PrintNarray(1))
-
-            prtcl.callPrtcl algo numN nodeArray
+            // start communicating
+            protocol.call algorithm nodeCount nodes
 
 
+        // communicate in line topology
+        let line nodeCount algorithm =
 
-        let buildLine numN algo=
+            let helper= 
+                Helper
+                    |> spawn system "helper"
 
-            let listener= 
-                Listener
-                    |> spawn system "listener"
-
-            let nodeArray = Array.zeroCreate(numN)
+            let nodes = Array.zeroCreate(nodeCount)
             
-            for i in [0..numN-1] do
-                nodeArray.[i]<- Node listener (i+1)
+            // create actor nodes
+            for i in [0..nodeCount-1] do
+                nodes.[i]<- Node helper (i+1)
                                     |> spawn system ("Node"+string(i))
             
-            let mutable nbrArray:IActorRef[]=Array.empty
+            let mutable neighbors:IActorRef[]=Array.empty
 
-
-            for i in [0..numN-1] do
+            // connect neighbors in line topology
+            for i in [0..nodeCount-1] do
                 if i=0 then
-                    nbrArray<-nodeArray.[1..1]    
-                    nodeArray.[i]<!SetNbrs(nbrArray)
+                    neighbors<-nodes.[1..1]    
+                    nodes.[i]<!Connect(neighbors)
 
-                elif i=(numN-1) then 
-                    nbrArray<-nodeArray.[(numN-2)..(numN-2)]                   
-                    nodeArray.[i]<!SetNbrs(nbrArray)
+                elif i=(nodeCount-1) then 
+                    neighbors<-nodes.[(nodeCount-2)..(nodeCount-2)]                   
+                    nodes.[i]<!Connect(neighbors)
 
                 else
-                    nbrArray<-Array.append nodeArray.[i-1..i-1] nodeArray.[i+1..i+1]            
-                    nodeArray.[i]<!SetNbrs(nbrArray)
+                    neighbors<-Array.append nodes.[i-1..i-1] nodes.[i+1..i+1]            
+                    nodes.[i]<!Connect(neighbors)
             
+            // start timer
             timer.Start()
+            helper<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodes,nodeCount)
 
-            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numN)
-
-            prtcl.callPrtcl algo numN nodeArray
+            // start communicating
+            protocol.call algorithm nodeCount nodes
         
 
-        let buildImp2D numN algo=
+        // communicate in imperefect 3D topology
+        let imp3D nodeCount algorithm=
 
-            let listener= 
-                Listener
-                    |> spawn system "listener"
+            let helper = 
+                Helper
+                    |> spawn system "helper"
             
-            let rCount=int(ceil ((float numN)** 0.33))
-            let numNMod=rCount*rCount
-            let numNM=int(numNMod)
+            let layers=int(ceil ((float nodeCount)** 0.33))
+            let layerNodeCount=int(layers*layers)
 
-            let nodeArray = Array.zeroCreate(numNM*rCount)
+            let nodes = Array.zeroCreate(layerNodeCount*layers)
             
-            for i in [0..int(numNM*rCount)-1] do
-                nodeArray.[i]<- Node listener (i+1)
+            // create actor nodes
+            for i in [0..int(layerNodeCount*layers)-1] do
+                nodes.[i]<- Node helper (i+1)
                                     |> spawn system ("Node"+string(i))
 
-            let mutable cycle = ((((numN |> float) ** 0.33) |> ceil) ** 2.0) |> int
+            let mutable cycle = ((((nodeCount |> float) ** 0.33) |> ceil) ** 2.0) |> int
             let mutable step = 0
 
-
-            // printfn "%A" nodeArray
-            printfn "%d %d %d" cycle rCount step
-
-            for layer in [1..rCount] do
-                for i in [0..numNM-1] do
-                    // printfn "%d %d" layer (step+i) 
-                    let mutable nbrArray:IActorRef[]=Array.empty
+            // connect neighbors in imperfect 3D topology
+            for layer in [1..layers] do
+                for i in [0..layerNodeCount-1] do
+                    let mutable neighbors:IActorRef[]=Array.empty
                     if i=0 then
-                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i+rCount..step+i+rCount]
+                        neighbors<-Array.append nodes.[step+i+1..step+i+1] nodes.[step+i+layers..step+i+layers]
 
-                    elif i=rCount-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+rCount..step+i+rCount]
+                    elif i=layers-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+layers..step+i+layers]
 
-                    elif i=numNM-rCount then 
-                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount]
+                    elif i=layerNodeCount-layers then 
+                        neighbors<-Array.append nodes.[step+i+1..step+i+1] nodes.[step+i-layers..step+i-layers]
 
-                    elif i=numNM-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount]
+                    elif i=layerNodeCount-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i-layers..step+i-layers]
 
-                    elif i<rCount-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                    elif i<layers-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+1..step+i+1] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
                         
                    
 
-                    elif i>numNM-rCount && i<numNM-1 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
+                    elif i>layerNodeCount-layers && i<layerNodeCount-1 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+1..step+i+1] 
+                        neighbors<-Array.append neighbors nodes.[step+i-layers..step+i-layers] 
 
-                    elif i%rCount = 0 then 
-                        nbrArray<-Array.append nodeArray.[step+i+1..step+i+1] nodeArray.[step+i-rCount..step+i-rCount] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                    elif i%layers = 0 then 
+                        neighbors<-Array.append nodes.[step+i+1..step+i+1] nodes.[step+i-layers..step+i-layers] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
 
-                    elif (i+1)%rCount = 0 then 
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i-rCount..step+i-rCount] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                    elif (i+1)%layers = 0 then 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i-layers..step+i-layers] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
                    
                     else
-                        nbrArray<-Array.append nodeArray.[step+i-1..step+i-1] nodeArray.[step+i+1..step+i+1] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i-rCount..step+i-rCount] 
-                        nbrArray<-Array.append nbrArray nodeArray.[step+i+rCount..step+i+rCount] 
+                        neighbors<-Array.append nodes.[step+i-1..step+i-1] nodes.[step+i+1..step+i+1] 
+                        neighbors<-Array.append neighbors nodes.[step+i-layers..step+i-layers] 
+                        neighbors<-Array.append neighbors nodes.[step+i+layers..step+i+layers] 
 
                     if layer =0 then
-                        nbrArray <- Array.append nbrArray nodeArray.[i+numNM..i+numNM]
-                        nbrArray <- Array.append nbrArray nodeArray.[i+numNM+1..i+numNM+1]
+                        neighbors <- Array.append neighbors nodes.[i+layerNodeCount..i+layerNodeCount]
+                        neighbors <- Array.append neighbors nodes.[i+layerNodeCount+1..i+layerNodeCount+1]
 
                     elif layer=cycle-1 then
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM-1..step+i-numNM-1]
+                        neighbors <- Array.append neighbors nodes.[step+i-layerNodeCount..step+i-layerNodeCount]
+                        neighbors <- Array.append neighbors nodes.[step+i-layerNodeCount-1..step+i-layerNodeCount-1]
 
                     else
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i-numNM..step+i-numNM]
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i+numNM..step+i+numNM]
-                        nbrArray <- Array.append nbrArray nodeArray.[step+i+numNM-1..step+i+numNM-1]
+                        neighbors <- Array.append neighbors nodes.[step+i-layerNodeCount..step+i-layerNodeCount]
+                        neighbors <- Array.append neighbors nodes.[step+i+layerNodeCount..step+i+layerNodeCount]
+                        neighbors <- Array.append neighbors nodes.[step+i+layerNodeCount-1..step+i+layerNodeCount-1]
 
 
                     
-                    nodeArray.[step+i]<!SetNbrs(nbrArray)
+                    nodes.[step+i]<!Connect(neighbors)
 
                 step <- step+cycle
 
+            // start timer
             timer.Start()
+            helper<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodes,layerNodeCount)
 
-            listener<!SetValues(System.DateTime.Now.TimeOfDay.Milliseconds,nodeArray,numNM)
-
-            // // printfn "%A" nodeArray
-            // (nodeArray.[0] <! PrintNarray(1))
-            // (nodeArray.[1] <! PrintNarray(1))
-            (nodeArray.[1] <! PrintNarray(1))
-
-            prtcl.callPrtcl algo numN nodeArray
+            // start communicating
+            protocol.call algorithm nodeCount nodes
 
 
+        let communicate nodeCount topology algorithm=
+            match topology with
+            | "full" ->
+                full nodeCount algorithm
+            | "3D" ->
+                p3D nodeCount algorithm
+            | "line" ->
+                line nodeCount algorithm
+            | "imp3D" ->
+                imp3D nodeCount algorithm
+            | _ -> 
+                printfn "Invalid topology - try full, 3D, line or imp3D"
+                Environment.Exit 0
 
-        let createTopology top numN algo=
-           if top="full" then buildFull numN algo
-           elif top="2D" then build2D numN algo
-           elif top="line" then buildLine numN algo
-           elif top="imp2D" then buildImp2D numN algo
-           else printfn"Wrong Argument!"
-             
+// Execution starts here            
 module mainModule=
 
         let args : string array = fsi.CommandLineArgs |> Array.tail
-        let mutable numNodes=args.[0] |> int
-        let topology=args.[1] |> string
-        let algo=args.[2] |>string
-        
-        printfn "%s %s" topology algo
 
-        tplgy.createTopology topology numNodes algo
+        printfn "Node count: %s, Topology: %s, Algorithm: %s" args.[0] args.[1] args.[2]
+
+        // communicate nodeCount topology_name algorithm
+        topology.communicate (args.[0] |> int) args.[1] args.[2]
    
         System.Console.ReadLine() |> ignore
