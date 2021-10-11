@@ -24,6 +24,8 @@ type Message =
 // helper globals
 let random  = System.Random()
 let timer = Stopwatch()
+let proc = Process.GetCurrentProcess()
+let cpuTimestamp = proc.TotalProcessorTime
 let system = ActorSystem.Create("System")
 let mutable TimeToConverge=0
 
@@ -48,9 +50,10 @@ let Helper (mailbox:Actor<_>) =
                 msgCount <- msgCount + 1
 
                 if msgCount = totalNodes then
-                    let rTime = timer.ElapsedMilliseconds
-                    printfn "Timer Convergence : %A ms" rTime
-                    printfn "System Time Convergence: %A ms" (endTime-startTime)
+                    let realTime = timer.ElapsedMilliseconds
+                    let cpuTime = (proc.TotalProcessorTime - cpuTimestamp).TotalMilliseconds
+                    printfn "CPU time = %dms" (int64 cpuTime)
+                    printfn "Timer Convergence : %A ms" realTime
                     TimeToConverge <-endTime-startTime
                     Environment.Exit 0
 
@@ -63,9 +66,10 @@ let Helper (mailbox:Actor<_>) =
                 nodeCount <- nodeCount + 1
 
                 if nodeCount = totalNodes then
-                    let rTime = timer.ElapsedMilliseconds
-                    printfn "Timer Convergence: %A ms" rTime
-                    printfn "System Time Convergence: %A ms" (endTime-startTime)
+                    let realTime = timer.ElapsedMilliseconds
+                    let cpuTime = (proc.TotalProcessorTime - cpuTimestamp).TotalMilliseconds
+                    printfn "CPU time = %dms" (int64 cpuTime)
+                    printfn "Timer Convergence : %A ms" realTime
                     TimeToConverge <-endTime-startTime
                     Environment.Exit 0
 
